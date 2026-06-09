@@ -25,12 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Playwright system deps (matches test-infra)
 RUN pip install --no-cache-dir playwright && playwright install-deps chromium 2>/dev/null || true && pip uninstall -y playwright
 
-# Windows core fonts (Arial, Times New Roman, Verdana, etc.)
-RUN echo "deb http://deb.debian.org/debian trixie contrib" >> /etc/apt/sources.list.d/contrib.list \
-    && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
-    && apt-get update && apt-get install -y --no-install-recommends ttf-mscorefonts-installer \
-    && fc-cache -f \
-    && rm -rf /var/lib/apt/lists/*
+# Avoid ttf-mscorefonts-installer: it downloads from flaky SourceForge mirrors
+# during build. Packaged Linux fonts above are enough for Chromium runtime.
+RUN fc-cache -f
 
 # Install KasmVNC (auto-selects amd64 or arm64 based on build platform)
 ARG TARGETARCH
