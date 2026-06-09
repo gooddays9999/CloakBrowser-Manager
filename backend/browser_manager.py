@@ -144,6 +144,27 @@ def _init_profile_defaults(user_data_dir: Path) -> None:
 
 BASE_CDP_PORT = 5100
 CDP_PORT_RANGE = 100  # cycle through 5100-5199 to avoid TIME_WAIT collisions
+DEFAULT_MAX_RUNNING_PROFILES = 20
+DEFAULT_MAX_CONCURRENT_LAUNCHES = 2
+
+
+class BrowserCapacityError(RuntimeError):
+    """Raised when launching another profile would exceed configured capacity."""
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default %d", name, raw, default)
+        return default
+    if value < 1:
+        logger.warning("Invalid %s=%r, using default %d", name, raw, default)
+        return default
+    return value
 
 
 @dataclass
@@ -156,13 +177,27 @@ class RunningProfile:
 
 
 class BrowserManager:
-    def __init__(self):
+    def __init__(
+        self,
+        max_running_profiles: int | None = None,
+        max_concurrent_launches: int | None = None,
+    ):
         self.running: dict[str, RunningProfile] = {}
         self._launching: set[str] = set()  # profile IDs currently being launched
         self.vnc = VNCManager()
         self._lock = asyncio.Lock()
         self._next_cdp_port = BASE_CDP_PORT
         self._auto_launch_task: asyncio.Task | None = None
+        self.max_running_profiles = (
+            max_running_profiles
+            if max_running_profiles is not None
+            else _positive_int_env("MAX_RUNNING_PROFILES", DEFAULT_MAX_RUNNING_PROFILES)
+        )
+        self.max_concurrent_launches = (
+            max_concurrent_launches
+            if max_concurrent_launches is not None
+            else _positive_int_env("MAX_CONCURRENT_LAUNCHES", DEFAULT_MAX_CONCURRENT_LAUNCHES)
+        )
 
     async def launch(self, profile: dict[str, Any]) -> RunningProfile:
         """Launch a browser instance for the given profile."""
@@ -171,6 +206,15 @@ class BrowserManager:
         async with self._lock:
             if profile_id in self.running or profile_id in self._launching:
                 raise RuntimeError(f"Profile {profile_id} is already running")
+            active_or_launching = len(self.running) + len(self._launching)
+            if active_or_launching >= self.max_running_profiles:
+                raise BrowserCapacityError(
+                    f"Browser capacity reached: {active_or_launching}/{self.max_running_profiles} profiles active or launching"
+                )
+            if len(self._launching) >= self.max_concurrent_launches:
+                raise BrowserCapacityError(
+                    f"Browser launch capacity reached: {len(self._launching)}/{self.max_concurrent_launches} launches in progress"
+                )
             self._launching.add(profile_id)
 
         display, ws_port = await self.vnc.allocate()

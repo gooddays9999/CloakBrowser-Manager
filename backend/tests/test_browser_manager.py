@@ -12,10 +12,12 @@ import socket
 from backend.browser_manager import (
     BASE_CDP_PORT,
     CDP_PORT_RANGE,
+    BrowserCapacityError,
     _init_profile_defaults,
     _normalize_proxy,
     _validate_proxy,
     BrowserManager,
+    RunningProfile,
 )
 
 
@@ -226,6 +228,45 @@ def test_allocate_cdp_port_all_occupied_raises():
     finally:
         for s in blockers:
             s.close()
+
+
+# ── Capacity guard ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_launch_rejects_when_running_profiles_reach_capacity(tmp_path: Path):
+    mgr = BrowserManager(max_running_profiles=1)
+    mgr.running["already-running"] = RunningProfile(
+        profile_id="already-running",
+        context=object(),
+        display=100,
+        ws_port=6100,
+        cdp_port=5100,
+    )
+
+    with pytest.raises(BrowserCapacityError, match="capacity reached"):
+        await mgr.launch({
+            "id": "new-profile",
+            "name": "New",
+            "user_data_dir": str(tmp_path / "new-profile"),
+        })
+
+    assert mgr.vnc.active_displays == []
+
+
+@pytest.mark.asyncio
+async def test_launch_rejects_when_launching_profiles_reach_capacity(tmp_path: Path):
+    mgr = BrowserManager(max_running_profiles=1)
+    mgr._launching.add("launching-profile")
+
+    with pytest.raises(BrowserCapacityError, match="capacity reached"):
+        await mgr.launch({
+            "id": "new-profile",
+            "name": "New",
+            "user_data_dir": str(tmp_path / "new-profile"),
+        })
+
+    assert mgr.vnc.active_displays == []
 
 
 # ── _init_profile_defaults ───────────────────────────────────────────────────

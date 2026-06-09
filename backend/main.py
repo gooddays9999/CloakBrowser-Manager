@@ -25,7 +25,7 @@ import starlette.requests
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import database as db
-from .browser_manager import BrowserManager
+from .browser_manager import BrowserCapacityError, BrowserManager
 from .models import (
     ClipboardRequest,
     LaunchResponse,
@@ -532,6 +532,8 @@ async def launch_profile(profile_id: str):
 
     try:
         running = await browser_mgr.launch(profile)
+    except BrowserCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

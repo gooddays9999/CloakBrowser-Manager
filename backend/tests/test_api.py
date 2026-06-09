@@ -9,7 +9,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from backend import main
-from backend.browser_manager import RunningProfile
+from backend.browser_manager import BrowserCapacityError, RunningProfile
 
 
 # ── Profile CRUD ─────────────────────────────────────────────────────────────
@@ -167,6 +167,16 @@ def test_launch_failure_500(app_client: TestClient):
     resp = app_client.post(f"/api/profiles/{pid}/launch")
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Failed to launch browser"
+
+
+def test_launch_capacity_error_429(app_client: TestClient):
+    """Capacity errors should tell callers to back off instead of looking like crashes."""
+    create = app_client.post("/api/profiles", json={"name": "Capacity"})
+    pid = create.json()["id"]
+    main.browser_mgr.launch = AsyncMock(side_effect=BrowserCapacityError("capacity reached"))
+    resp = app_client.post(f"/api/profiles/{pid}/launch")
+    assert resp.status_code == 429
+    assert "capacity reached" in resp.json()["detail"]
 
 
 def test_stop_not_running(app_client: TestClient):

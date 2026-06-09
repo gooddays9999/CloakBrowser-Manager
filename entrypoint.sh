@@ -4,6 +4,10 @@ set -e
 # Initialize data directories
 mkdir -p /data/profiles
 
+# Avoid filling the container filesystem with browser crash dumps during launch storms.
+ulimit -c 0 || true
+rm -f /app/core.* 2>/dev/null || true
+
 # Kill stale processes from previous container runs
 pkill -f 'Xvnc :[0-9]' 2>/dev/null || true
 pkill -f 'cloakbrowser.*chrome' 2>/dev/null || true
