@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -219,6 +220,7 @@ class BrowserManager:
 
         display, ws_port = await self.vnc.allocate()
 
+        context = None
         try:
             cdp_port = self._allocate_cdp_port()
         except ValueError:
@@ -325,6 +327,9 @@ class BrowserManager:
             return running
 
         except BaseException:
+            if context is not None:
+                with contextlib.suppress(BaseException):
+                    await context.close()
             async with self._lock:
                 self._launching.discard(profile_id)
             await self.vnc.stop_vnc(display)

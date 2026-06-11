@@ -107,6 +107,12 @@ class VNCManager:
                 )
             except subprocess.TimeoutExpired:
                 instance.process.kill()
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, instance.process.wait, 5,
+                    )
+                except subprocess.TimeoutExpired:
+                    logger.warning("Xvnc on :%d did not exit after SIGKILL", display)
 
     async def cleanup_all(self):
         """Kill all managed Xvnc processes. Called on shutdown."""

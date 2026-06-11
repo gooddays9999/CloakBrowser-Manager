@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import socket
+import backend.browser_manager as browser_manager
 
 from backend.browser_manager import (
     BASE_CDP_PORT,
@@ -266,6 +268,42 @@ async def test_launch_rejects_when_launching_profiles_reach_capacity(tmp_path: P
             "user_data_dir": str(tmp_path / "new-profile"),
         })
 
+    assert mgr.vnc.active_displays == []
+
+
+@pytest.mark.asyncio
+async def test_launch_closes_context_when_post_launch_setup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mgr = BrowserManager()
+    profile_id = "new-profile"
+    context = MagicMock()
+    context.pages = []
+    context.add_init_script = AsyncMock(side_effect=RuntimeError("init failed"))
+    context.close = AsyncMock()
+
+    monkeypatch.setattr(mgr.vnc, "start_vnc", AsyncMock())
+    original_stop_vnc = mgr.vnc.stop_vnc
+    stop_vnc = AsyncMock(side_effect=original_stop_vnc)
+    monkeypatch.setattr(mgr.vnc, "stop_vnc", stop_vnc)
+    monkeypatch.setattr(
+        browser_manager,
+        "launch_persistent_context_async",
+        AsyncMock(return_value=context),
+    )
+
+    with pytest.raises(RuntimeError, match="init failed"):
+        await mgr.launch({
+            "id": profile_id,
+            "name": "New",
+            "user_data_dir": str(tmp_path / profile_id),
+        })
+
+    context.close.assert_awaited_once()
+    stop_vnc.assert_awaited_once_with(100)
+    assert profile_id not in mgr._launching
+    assert profile_id not in mgr.running
     assert mgr.vnc.active_displays == []
 
 
