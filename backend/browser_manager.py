@@ -379,8 +379,13 @@ class BrowserManager:
         async with self._lock:
             profile_ids = list(self.running.keys())
 
-        for pid in profile_ids:
-            await self.stop(pid)
+        if profile_ids:
+            # Close all browsers in parallel so every IndexedDB flush completes within the
+            # container stop grace period. Sequential close under Docker's default 10s grace
+            # SIGKILLs most browsers mid-write, corrupting the WhatsApp session (UNPAIRED).
+            await asyncio.gather(
+                *(self.stop(pid) for pid in profile_ids), return_exceptions=True
+            )
 
         await self.vnc.cleanup_all()
 

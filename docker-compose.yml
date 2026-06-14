@@ -1,6 +1,9 @@
 services:
   manager:
     build: .
+    # Give the lifespan shutdown enough time to close every browser gracefully (flush
+    # IndexedDB) before SIGKILL. Default Docker grace is only 10s, which corrupts sessions.
+    stop_grace_period: 300s
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
