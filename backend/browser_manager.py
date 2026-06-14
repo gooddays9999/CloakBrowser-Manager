@@ -144,7 +144,9 @@ def _init_profile_defaults(user_data_dir: Path) -> None:
 
 
 BASE_CDP_PORT = 5100
-CDP_PORT_RANGE = 100  # cycle through 5100-5199 to avoid TIME_WAIT collisions
+# Must exceed MAX_RUNNING_PROFILES with cycling headroom (TIME_WAIT). VNC ws ports start
+# at 6100, so this 5100-5399 window stays clear of them.
+CDP_PORT_RANGE = 300  # cycle through 5100-5399 to avoid TIME_WAIT collisions
 DEFAULT_MAX_RUNNING_PROFILES = 20
 DEFAULT_MAX_CONCURRENT_LAUNCHES = 2
 
