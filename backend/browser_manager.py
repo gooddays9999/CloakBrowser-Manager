@@ -144,7 +144,9 @@ def _init_profile_defaults(user_data_dir: Path) -> None:
 
 
 BASE_CDP_PORT = 5100
-CDP_PORT_RANGE = 100  # cycle through 5100-5199 to avoid TIME_WAIT collisions
+# Must exceed MAX_RUNNING_PROFILES with cycling headroom (TIME_WAIT). VNC ws ports start
+# at 6100, so this 5100-5399 window stays clear of them.
+CDP_PORT_RANGE = 300  # cycle through 5100-5399 to avoid TIME_WAIT collisions
 DEFAULT_MAX_RUNNING_PROFILES = 20
 DEFAULT_MAX_CONCURRENT_LAUNCHES = 2
 
@@ -166,6 +168,27 @@ def _positive_int_env(name: str, default: int) -> int:
         logger.warning("Invalid %s=%r, using default %d", name, raw, default)
         return default
     return value
+
+
+def _optional_positive_int_env(name: str) -> int | None:
+    """Return a positive int from env, or None if unset/blank/invalid (so a derived
+    default can take over)."""
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, ignoring (will derive)", name, raw)
+        return None
+    return value if value >= 1 else None
+
+
+def _derive_max_launches(max_running: int) -> int:
+    """Scale cold-start concurrency to the host's browser capacity (MAX_RUNNING_PROFILES).
+    Cold starts are CPU-heavy, so this stays well below max_running and is clamped.
+    e.g. 142->8, 110->6, 70->4."""
+    return max(4, min(12, round(max_running / 18)))
 
 
 @dataclass
@@ -194,10 +217,21 @@ class BrowserManager:
             if max_running_profiles is not None
             else _positive_int_env("MAX_RUNNING_PROFILES", DEFAULT_MAX_RUNNING_PROFILES)
         )
+        # Cold-start concurrency follows the host's browser capacity by default
+        # (MAX_RUNNING_PROFILES is the single capacity knob). An explicit
+        # MAX_CONCURRENT_LAUNCHES env still overrides when set.
         self.max_concurrent_launches = (
             max_concurrent_launches
             if max_concurrent_launches is not None
-            else _positive_int_env("MAX_CONCURRENT_LAUNCHES", DEFAULT_MAX_CONCURRENT_LAUNCHES)
+            else (
+                _optional_positive_int_env("MAX_CONCURRENT_LAUNCHES")
+                or _derive_max_launches(self.max_running_profiles)
+            )
+        )
+        logger.info(
+            "Concurrency: max_running_profiles=%d max_concurrent_launches=%d",
+            self.max_running_profiles,
+            self.max_concurrent_launches,
         )
 
     async def launch(self, profile: dict[str, Any]) -> RunningProfile:
@@ -379,8 +413,13 @@ class BrowserManager:
         async with self._lock:
             profile_ids = list(self.running.keys())
 
-        for pid in profile_ids:
-            await self.stop(pid)
+        if profile_ids:
+            # Close all browsers in parallel so every IndexedDB flush completes within the
+            # container stop grace period. Sequential close under Docker's default 10s grace
+            # SIGKILLs most browsers mid-write, corrupting the WhatsApp session (UNPAIRED).
+            await asyncio.gather(
+                *(self.stop(pid) for pid in profile_ids), return_exceptions=True
+            )
 
         await self.vnc.cleanup_all()
 
