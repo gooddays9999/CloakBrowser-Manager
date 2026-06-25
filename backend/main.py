@@ -25,6 +25,7 @@ import starlette.requests
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import database as db
+from . import session_backup
 from .browser_manager import BrowserCapacityError, BrowserManager
 from .models import (
     ClipboardRequest,
@@ -34,6 +35,7 @@ from .models import (
     ProfileResponse,
     ProfileStatusResponse,
     ProfileUpdate,
+    SessionBackupResponse,
     StatusResponse,
     TagResponse,
 )
@@ -564,6 +566,23 @@ async def get_profile_status(profile_id: str):
         raise HTTPException(status_code=404, detail="Profile not found")
     status = browser_mgr.get_status(profile_id)
     return ProfileStatusResponse(**status)
+
+
+@app.post("/api/profiles/{profile_id}/backup-session", response_model=SessionBackupResponse)
+async def backup_profile_session(profile_id: str):
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if profile_id in browser_mgr.running:
+        raise HTTPException(status_code=409, detail="Profile is running")
+
+    try:
+        return SessionBackupResponse(**session_backup.backup_profile_session(profile))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to backup profile %s session: %s", profile_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to backup profile session")
 
 
 # ── System Status ─────────────────────────────────────────────────────────────

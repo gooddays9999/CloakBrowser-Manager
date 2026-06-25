@@ -126,6 +126,16 @@ class ProfileStatusResponse(BaseModel):
     cdp_url: str | None = None
 
 
+class SessionBackupResponse(BaseModel):
+    ok: bool
+    profile_id: str
+    backup_path: str
+    created_at: str
+    size_bytes: int
+    replaced: bool = False
+    removed_stale: list[str] = []
+
+
 class ClipboardRequest(BaseModel):
     text: str = Field(max_length=1_048_576)  # 1MB max
 

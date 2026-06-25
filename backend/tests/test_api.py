@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -199,6 +200,55 @@ def test_system_status(app_client: TestClient):
     assert data["running_count"] == 0
     assert data["binary_version"] == "0.0.0-test"
     assert data["profiles_total"] >= 1
+
+
+def test_backup_session_creates_single_cache_stripped_backup(app_client: TestClient, tmp_db: Path):
+    resp = app_client.post("/api/profiles", json={"name": "Backup Test"})
+    assert resp.status_code == 201
+    profile = resp.json()
+    pid = profile["id"]
+    profile_dir = Path(profile["user_data_dir"])
+    (profile_dir / "Default" / "IndexedDB").mkdir(parents=True)
+    (profile_dir / "Default" / "IndexedDB" / "session.ldb").write_text("session", encoding="utf-8")
+    (profile_dir / "Default" / "Code Cache").mkdir(parents=True)
+    (profile_dir / "Default" / "Code Cache" / "code.bin").write_text("cache", encoding="utf-8")
+    (profile_dir / "Default" / "Service Worker" / "CacheStorage").mkdir(parents=True)
+    (profile_dir / "Default" / "Service Worker" / "CacheStorage" / "cached").write_text("cache", encoding="utf-8")
+
+    resp = app_client.post(f"/api/profiles/{pid}/backup-session")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["profile_id"] == pid
+    assert data["replaced"] is False
+
+    backup_dir = tmp_db / "session_backups" / pid / "last_good"
+    assert (backup_dir / "Default" / "IndexedDB" / "session.ldb").exists()
+    assert not (backup_dir / "Default" / "Code Cache").exists()
+    assert not (backup_dir / "Default" / "Service Worker" / "CacheStorage").exists()
+    assert (backup_dir / "backup_meta.json").exists()
+
+    (profile_dir / "Default" / "IndexedDB" / "session.ldb").write_text("session2", encoding="utf-8")
+    resp = app_client.post(f"/api/profiles/{pid}/backup-session")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["replaced"] is True
+    assert (backup_dir / "Default" / "IndexedDB" / "session.ldb").read_text(encoding="utf-8") == "session2"
+    leftovers = [p.name for p in (tmp_db / "session_backups" / pid).iterdir()]
+    assert leftovers == ["last_good"]
+
+
+def test_backup_session_rejects_running_profile(app_client: TestClient):
+    resp = app_client.post("/api/profiles", json={"name": "Running Backup"})
+    assert resp.status_code == 201
+    pid = resp.json()["id"]
+    main.browser_mgr.running[pid] = object()  # type: ignore[assignment]
+    try:
+        resp = app_client.post(f"/api/profiles/{pid}/backup-session")
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Profile is running"
+    finally:
+        main.browser_mgr.running.pop(pid, None)
 
 
 # ── Launch Args ─────────────────────────────────────────────────────────────

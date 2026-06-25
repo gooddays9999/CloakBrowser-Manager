@@ -35,6 +35,9 @@ def tmp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_file = tmp_path / "profiles.db"
     monkeypatch.setattr(db, "DB_PATH", db_file)
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    from backend import session_backup
+
+    monkeypatch.setattr(session_backup, "BACKUP_ROOT", tmp_path / "session_backups")
     db.init_db()
     return tmp_path
 
