@@ -251,6 +251,64 @@ def test_backup_session_rejects_running_profile(app_client: TestClient):
         main.browser_mgr.running.pop(pid, None)
 
 
+def test_restore_session_replaces_profile_from_last_good(app_client: TestClient, tmp_db: Path):
+    resp = app_client.post("/api/profiles", json={"name": "Restore Test"})
+    assert resp.status_code == 201
+    profile = resp.json()
+    pid = profile["id"]
+    profile_dir = Path(profile["user_data_dir"])
+    indexed_db = profile_dir / "Default" / "IndexedDB" / "session.ldb"
+    indexed_db.parent.mkdir(parents=True)
+    indexed_db.write_text("good-session", encoding="utf-8")
+    (profile_dir / "Default" / "Code Cache").mkdir(parents=True)
+    (profile_dir / "Default" / "Code Cache" / "code.bin").write_text("cache", encoding="utf-8")
+
+    backup = app_client.post(f"/api/profiles/{pid}/backup-session")
+    assert backup.status_code == 200
+
+    indexed_db.write_text("broken-session", encoding="utf-8")
+    (profile_dir / "Default" / "Local Storage").mkdir(parents=True)
+    (profile_dir / "Default" / "Local Storage" / "newer").write_text("newer", encoding="utf-8")
+    stale_tmp = profile_dir.parent / f"{pid}.restore-tmp-stale"
+    stale_old = profile_dir.parent / f"{pid}.restore-old-stale"
+    stale_tmp.mkdir()
+    stale_old.mkdir()
+
+    resp = app_client.post(f"/api/profiles/{pid}/restore-session")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["profile_id"] == pid
+    assert data["restored_path"] == str(profile_dir)
+    assert sorted(data["removed_stale"]) == sorted([stale_tmp.name, stale_old.name])
+    assert indexed_db.read_text(encoding="utf-8") == "good-session"
+    assert not (profile_dir / "Default" / "Code Cache").exists()
+    assert not (profile_dir / "Default" / "Local Storage" / "newer").exists()
+
+
+def test_restore_session_requires_existing_backup(app_client: TestClient):
+    resp = app_client.post("/api/profiles", json={"name": "No Backup"})
+    assert resp.status_code == 201
+    pid = resp.json()["id"]
+
+    resp = app_client.post(f"/api/profiles/{pid}/restore-session")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Session backup not found"
+
+
+def test_restore_session_rejects_running_profile(app_client: TestClient):
+    resp = app_client.post("/api/profiles", json={"name": "Running Restore"})
+    assert resp.status_code == 201
+    pid = resp.json()["id"]
+    main.browser_mgr.running[pid] = object()  # type: ignore[assignment]
+    try:
+        resp = app_client.post(f"/api/profiles/{pid}/restore-session")
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Profile is running"
+    finally:
+        main.browser_mgr.running.pop(pid, None)
+
+
 # ── Launch Args ─────────────────────────────────────────────────────────────
 
 

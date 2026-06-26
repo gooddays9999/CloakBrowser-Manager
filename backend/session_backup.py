@@ -84,6 +84,25 @@ def _cleanup_stale(profile_backup_dir: Path) -> list[str]:
     return removed
 
 
+def _cleanup_restore_stale(profile_dir: Path) -> list[str]:
+    removed: list[str] = []
+    parent = profile_dir.parent
+    if not parent.exists():
+        return removed
+    prefixes = (f"{profile_dir.name}.restore-tmp-", f"{profile_dir.name}.restore-old-")
+    for child in parent.iterdir():
+        if not child.is_dir():
+            continue
+        if not child.name.startswith(prefixes):
+            continue
+        try:
+            shutil.rmtree(child)
+            removed.append(child.name)
+        except OSError as exc:
+            logger.warning("Failed to remove stale restore dir %s: %s", child, exc)
+    return removed
+
+
 def backup_profile_session(profile: dict[str, Any]) -> dict[str, Any]:
     """Create or replace the single last-good backup for a stopped profile."""
     profile_id = str(profile["id"])
@@ -140,6 +159,56 @@ def backup_profile_session(profile: dict[str, Any]) -> dict[str, Any]:
             "profile_id": profile_id,
             "backup_path": str(last_good),
             "created_at": created_at,
+            "size_bytes": size_bytes,
+            "replaced": replaced,
+            "removed_stale": removed_stale,
+        }
+    except Exception:
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
+def restore_profile_session(profile: dict[str, Any]) -> dict[str, Any]:
+    """Replace a stopped profile with its single last-good backup."""
+    profile_id = str(profile["id"])
+    target = Path(str(profile["user_data_dir"]))
+    backup = BACKUP_ROOT / profile_id / "last_good"
+    if not backup.exists() or not backup.is_dir():
+        raise FileNotFoundError("Session backup not found")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    removed_stale = _cleanup_restore_stale(target)
+
+    tmp = target.parent / f"{target.name}.restore-tmp-{uuid.uuid4().hex}"
+    old = target.parent / f"{target.name}.restore-old-{uuid.uuid4().hex}"
+    restored_at = _now()
+
+    try:
+        shutil.copytree(backup, tmp, symlinks=True)
+        replaced = target.exists()
+        if replaced:
+            target.rename(old)
+        try:
+            tmp.rename(target)
+        except Exception:
+            if old.exists() and not target.exists():
+                old.rename(target)
+            raise
+
+        if old.exists():
+            try:
+                shutil.rmtree(old)
+            except OSError as exc:
+                logger.warning("Failed to delete old profile dir after restore %s: %s", old, exc)
+
+        size_bytes = _dir_size_bytes(target)
+        return {
+            "ok": True,
+            "profile_id": profile_id,
+            "backup_path": str(backup),
+            "restored_path": str(target),
+            "restored_at": restored_at,
             "size_bytes": size_bytes,
             "replaced": replaced,
             "removed_stale": removed_stale,

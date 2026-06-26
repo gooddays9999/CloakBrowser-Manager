@@ -133,7 +133,18 @@ class SessionBackupResponse(BaseModel):
     created_at: str
     size_bytes: int
     replaced: bool = False
-    removed_stale: list[str] = []
+    removed_stale: list[str] = Field(default_factory=list)
+
+
+class SessionRestoreResponse(BaseModel):
+    ok: bool
+    profile_id: str
+    backup_path: str
+    restored_path: str
+    restored_at: str
+    size_bytes: int
+    replaced: bool = False
+    removed_stale: list[str] = Field(default_factory=list)
 
 
 class ClipboardRequest(BaseModel):

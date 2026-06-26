@@ -36,6 +36,7 @@ from .models import (
     ProfileStatusResponse,
     ProfileUpdate,
     SessionBackupResponse,
+    SessionRestoreResponse,
     StatusResponse,
     TagResponse,
 )
@@ -583,6 +584,23 @@ async def backup_profile_session(profile_id: str):
     except Exception as exc:
         logger.error("Failed to backup profile %s session: %s", profile_id, exc)
         raise HTTPException(status_code=500, detail="Failed to backup profile session")
+
+
+@app.post("/api/profiles/{profile_id}/restore-session", response_model=SessionRestoreResponse)
+async def restore_profile_session(profile_id: str):
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if profile_id in browser_mgr.running:
+        raise HTTPException(status_code=409, detail="Profile is running")
+
+    try:
+        return SessionRestoreResponse(**session_backup.restore_profile_session(profile))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to restore profile %s session: %s", profile_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to restore profile session")
 
 
 # ── System Status ─────────────────────────────────────────────────────────────
