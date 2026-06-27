@@ -202,18 +202,28 @@ def test_system_status(app_client: TestClient):
     assert data["profiles_total"] >= 1
 
 
-def test_backup_session_creates_single_cache_stripped_backup(app_client: TestClient, tmp_db: Path):
+def test_backup_session_whitelists_login_dirs_only(app_client: TestClient, tmp_db: Path):
     resp = app_client.post("/api/profiles", json={"name": "Backup Test"})
     assert resp.status_code == 201
     profile = resp.json()
     pid = profile["id"]
-    profile_dir = Path(profile["user_data_dir"])
-    (profile_dir / "Default" / "IndexedDB").mkdir(parents=True)
-    (profile_dir / "Default" / "IndexedDB" / "session.ldb").write_text("session", encoding="utf-8")
-    (profile_dir / "Default" / "Code Cache").mkdir(parents=True)
-    (profile_dir / "Default" / "Code Cache" / "code.bin").write_text("cache", encoding="utf-8")
-    (profile_dir / "Default" / "Service Worker" / "CacheStorage").mkdir(parents=True)
-    (profile_dir / "Default" / "Service Worker" / "CacheStorage" / "cached").write_text("cache", encoding="utf-8")
+    default = Path(profile["user_data_dir"]) / "Default"
+    # Login state we DO want backed up.
+    (default / "IndexedDB").mkdir(parents=True)
+    (default / "IndexedDB" / "session.ldb").write_text("session", encoding="utf-8")
+    (default / "Local Storage" / "leveldb").mkdir(parents=True)
+    (default / "Local Storage" / "leveldb" / "000001.log").write_text("ls", encoding="utf-8")
+    (default / "Service Worker" / "Database").mkdir(parents=True)
+    (default / "Service Worker" / "Database" / "sw.db").write_text("sw", encoding="utf-8")
+    # Regenerable cache we must NOT back up.
+    (default / "Code Cache").mkdir(parents=True)
+    (default / "Code Cache" / "code.bin").write_text("cache", encoding="utf-8")
+    (default / "Service Worker" / "CacheStorage").mkdir(parents=True)
+    (default / "Service Worker" / "CacheStorage" / "cached").write_text("cache", encoding="utf-8")
+    # Non-login profile files we must NOT back up (whitelist, not blocklist).
+    (default / "Preferences").write_text("{}", encoding="utf-8")
+    (default / "Network").mkdir(parents=True)
+    (default / "Network" / "Cookies").write_text("cookies", encoding="utf-8")
 
     resp = app_client.post(f"/api/profiles/{pid}/backup-session")
     assert resp.status_code == 200
@@ -222,20 +232,43 @@ def test_backup_session_creates_single_cache_stripped_backup(app_client: TestCli
     assert data["profile_id"] == pid
     assert data["replaced"] is False
 
-    backup_dir = tmp_db / "session_backups" / pid / "last_good"
-    assert (backup_dir / "Default" / "IndexedDB" / "session.ldb").exists()
-    assert not (backup_dir / "Default" / "Code Cache").exists()
-    assert not (backup_dir / "Default" / "Service Worker" / "CacheStorage").exists()
-    assert (backup_dir / "backup_meta.json").exists()
+    backup_default = tmp_db / "session_backups" / pid / "last_good" / "Default"
+    # Login dirs present.
+    assert (backup_default / "IndexedDB" / "session.ldb").exists()
+    assert (backup_default / "Local Storage" / "leveldb" / "000001.log").exists()
+    assert (backup_default / "Service Worker" / "Database" / "sw.db").exists()
+    # Cache excluded.
+    assert not (backup_default / "Code Cache").exists()
+    assert not (backup_default / "Service Worker" / "CacheStorage").exists()
+    # Non-login profile files excluded by the whitelist.
+    assert not (backup_default / "Preferences").exists()
+    assert not (backup_default / "Network").exists()
+    assert (tmp_db / "session_backups" / pid / "last_good" / "backup_meta.json").exists()
 
-    (profile_dir / "Default" / "IndexedDB" / "session.ldb").write_text("session2", encoding="utf-8")
+    # Re-backup overwrites the single last-good copy in place.
+    (default / "IndexedDB" / "session.ldb").write_text("session2", encoding="utf-8")
     resp = app_client.post(f"/api/profiles/{pid}/backup-session")
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["replaced"] is True
-    assert (backup_dir / "Default" / "IndexedDB" / "session.ldb").read_text(encoding="utf-8") == "session2"
+    assert resp.json()["replaced"] is True
+    assert (backup_default / "IndexedDB" / "session.ldb").read_text(encoding="utf-8") == "session2"
     leftovers = [p.name for p in (tmp_db / "session_backups" / pid).iterdir()]
     assert leftovers == ["last_good"]
+
+
+def test_backup_session_rejects_when_not_logged_in(app_client: TestClient, tmp_db: Path):
+    """No IndexedDB (or empty) => no login state => clear error, no empty backup."""
+    resp = app_client.post("/api/profiles", json={"name": "Empty Backup"})
+    assert resp.status_code == 201
+    profile = resp.json()
+    pid = profile["id"]
+    default = Path(profile["user_data_dir"]) / "Default"
+    # Profile exists with some cache, but no WhatsApp session.
+    (default / "Code Cache").mkdir(parents=True)
+    (default / "Code Cache" / "code.bin").write_text("cache", encoding="utf-8")
+
+    resp = app_client.post(f"/api/profiles/{pid}/backup-session")
+    assert resp.status_code == 400
+    assert not (tmp_db / "session_backups" / pid / "last_good").exists()
 
 
 def test_backup_session_rejects_running_profile(app_client: TestClient):
@@ -251,39 +284,47 @@ def test_backup_session_rejects_running_profile(app_client: TestClient):
         main.browser_mgr.running.pop(pid, None)
 
 
-def test_restore_session_replaces_profile_from_last_good(app_client: TestClient, tmp_db: Path):
+def test_restore_session_overlays_login_dirs_and_preserves_rest(app_client: TestClient, tmp_db: Path):
     resp = app_client.post("/api/profiles", json={"name": "Restore Test"})
     assert resp.status_code == 201
     profile = resp.json()
     pid = profile["id"]
     profile_dir = Path(profile["user_data_dir"])
-    indexed_db = profile_dir / "Default" / "IndexedDB" / "session.ldb"
+    default = profile_dir / "Default"
+    indexed_db = default / "IndexedDB" / "session.ldb"
     indexed_db.parent.mkdir(parents=True)
     indexed_db.write_text("good-session", encoding="utf-8")
-    (profile_dir / "Default" / "Code Cache").mkdir(parents=True)
-    (profile_dir / "Default" / "Code Cache" / "code.bin").write_text("cache", encoding="utf-8")
 
     backup = app_client.post(f"/api/profiles/{pid}/backup-session")
     assert backup.status_code == 200
 
+    # Live profile drifts after the backup: session corrupts, other files added.
     indexed_db.write_text("broken-session", encoding="utf-8")
-    (profile_dir / "Default" / "Local Storage").mkdir(parents=True)
-    (profile_dir / "Default" / "Local Storage" / "newer").write_text("newer", encoding="utf-8")
-    stale_tmp = profile_dir.parent / f"{pid}.restore-tmp-stale"
-    stale_old = profile_dir.parent / f"{pid}.restore-old-stale"
+    (default / "Preferences").write_text("{kept}", encoding="utf-8")
+    (default / "Local Storage").mkdir(parents=True)
+    (default / "Local Storage" / "newer").write_text("newer", encoding="utf-8")
+    # A leftover temp dir from a prior interrupted restore should be cleaned up.
+    stale_tmp = default / ".restore-tmp-stale"
     stale_tmp.mkdir()
-    stale_old.mkdir()
 
     resp = app_client.post(f"/api/profiles/{pid}/restore-session")
     assert resp.status_code == 200
     data = resp.json()
     assert data["ok"] is True
     assert data["profile_id"] == pid
-    assert data["restored_path"] == str(profile_dir)
-    assert sorted(data["removed_stale"]) == sorted([stale_tmp.name, stale_old.name])
+    assert data["restored_path"] == str(default)
+    assert data["replaced"] is True
+    assert "stale" in " ".join(data["removed_stale"]) or data["removed_stale"]
+    assert not stale_tmp.exists()
+
+    # Login state restored from the good backup.
     assert indexed_db.read_text(encoding="utf-8") == "good-session"
-    assert not (profile_dir / "Default" / "Code Cache").exists()
-    assert not (profile_dir / "Default" / "Local Storage" / "newer").exists()
+    # Non-login files added after the backup are PRESERVED (overlay, not replace).
+    assert (default / "Preferences").read_text(encoding="utf-8") == "{kept}"
+    assert (default / "Local Storage" / "newer").read_text(encoding="utf-8") == "newer"
+    # The corrupt live IndexedDB is moved aside for debugging, not deleted.
+    corrupt_idb = profile_dir / ".corrupt" / "IndexedDB" / "session.ldb"
+    assert corrupt_idb.read_text(encoding="utf-8") == "broken-session"
 
 
 def test_restore_session_requires_existing_backup(app_client: TestClient):

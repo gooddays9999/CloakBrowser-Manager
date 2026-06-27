@@ -579,6 +579,8 @@ async def backup_profile_session(profile_id: str):
 
     try:
         return SessionBackupResponse(**session_backup.backup_profile_session(profile))
+    except session_backup.NoSessionDataError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
@@ -596,7 +598,7 @@ async def restore_profile_session(profile_id: str):
 
     try:
         return SessionRestoreResponse(**session_backup.restore_profile_session(profile))
-    except FileNotFoundError as exc:
+    except (session_backup.NoBackupError, FileNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         logger.error("Failed to restore profile %s session: %s", profile_id, exc)

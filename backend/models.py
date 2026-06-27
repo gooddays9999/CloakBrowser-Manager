@@ -133,6 +133,7 @@ class SessionBackupResponse(BaseModel):
     created_at: str
     size_bytes: int
     replaced: bool = False
+    backed_up: list[str] = Field(default_factory=list)
     removed_stale: list[str] = Field(default_factory=list)
 
 
@@ -144,6 +145,7 @@ class SessionRestoreResponse(BaseModel):
     restored_at: str
     size_bytes: int
     replaced: bool = False
+    restored: list[str] = Field(default_factory=list)
     removed_stale: list[str] = Field(default_factory=list)
 
 
