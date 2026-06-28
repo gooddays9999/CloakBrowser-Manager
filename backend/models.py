@@ -113,10 +113,24 @@ class LaunchResponse(BaseModel):
     cdp_url: str | None = None
 
 
+class SystemLoad(BaseModel):
+    cpu_count: int
+    load1: float | None = None
+    load5: float | None = None
+    load15: float | None = None
+    load1_per_core: float | None = None
+    load5_per_core: float | None = None
+    mem_total_mb: int | None = None
+    mem_available_mb: int | None = None
+    mem_used_percent: float | None = None
+    sampled_at: str
+
+
 class StatusResponse(BaseModel):
     running_count: int
     binary_version: str
     profiles_total: int
+    system: SystemLoad | None = None
 
 
 class ProfileStatusResponse(BaseModel):

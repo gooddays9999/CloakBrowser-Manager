@@ -26,6 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import database as db
 from . import session_backup
+from . import system_load as system_load_mod
 from .browser_manager import BrowserCapacityError, BrowserManager
 from .models import (
     ClipboardRequest,
@@ -613,10 +614,18 @@ async def get_system_status():
     from cloakbrowser.config import CHROMIUM_VERSION
 
     profiles = db.list_profiles()
+
+    try:
+        system = system_load_mod.system_load()
+    except Exception as exc:  # never let load sampling break /api/status
+        logger.warning("system_load sampling failed: %s", exc)
+        system = None
+
     return StatusResponse(
         running_count=len(browser_mgr.running),
         binary_version=CHROMIUM_VERSION,
         profiles_total=len(profiles),
+        system=system,
     )
 
 

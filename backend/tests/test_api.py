@@ -202,6 +202,74 @@ def test_system_status(app_client: TestClient):
     assert data["profiles_total"] >= 1
 
 
+def test_status_includes_system_load_block(app_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from backend import system_load
+
+    monkeypatch.setattr(system_load.os, "cpu_count", lambda: 40)
+    monkeypatch.setattr(system_load, "_loadavg", lambda: (0.4, 8.0, 6.0))
+    monkeypatch.setattr(system_load, "_read_meminfo_mb", lambda: (128640, 110233))
+
+    resp = app_client.get("/api/status")
+    assert resp.status_code == 200
+    sys = resp.json()["system"]
+    assert sys["cpu_count"] == 40
+    assert sys["load1"] == 0.4 and sys["load5"] == 8.0 and sys["load15"] == 6.0
+    assert sys["load5_per_core"] == 0.2  # round(8.0 / 40, 3)
+    assert sys["mem_total_mb"] == 128640
+    assert sys["mem_available_mb"] == 110233
+    assert sys["mem_used_percent"] == 14.3  # round((1 - 110233/128640) * 100, 1)
+    assert sys["sampled_at"].endswith("Z")
+
+
+def test_status_system_partial_when_meminfo_missing(app_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """A missing /proc/meminfo still yields loadavg; mem fields go null, no error."""
+    from backend import system_load
+
+    monkeypatch.setattr(system_load.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(system_load, "_loadavg", lambda: (1.0, 2.0, 3.0))
+
+    def _boom() -> tuple[int | None, int | None]:
+        raise FileNotFoundError("/proc/meminfo")
+
+    monkeypatch.setattr(system_load, "_read_meminfo_mb", _boom)
+
+    resp = app_client.get("/api/status")
+    assert resp.status_code == 200
+    sys = resp.json()["system"]
+    assert sys["load1"] == 1.0
+    assert sys["mem_available_mb"] is None
+    assert sys["mem_used_percent"] is None
+
+
+def test_status_system_null_when_fully_unavailable(app_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """If neither loadavg nor meminfo can be read, the system block is omitted (null), not an error."""
+    from backend import system_load
+
+    def _boom_load() -> tuple[float, float, float]:
+        raise OSError("no loadavg")
+
+    def _boom_mem() -> tuple[int | None, int | None]:
+        raise FileNotFoundError("/proc/meminfo")
+
+    monkeypatch.setattr(system_load, "_loadavg", _boom_load)
+    monkeypatch.setattr(system_load, "_read_meminfo_mb", _boom_mem)
+
+    resp = app_client.get("/api/status")
+    assert resp.status_code == 200
+    assert resp.json()["system"] is None
+
+
+def test_status_system_survives_unexpected_error(app_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """An unexpected exception in sampling must not break /api/status."""
+    monkeypatch.setattr(main.system_load_mod, "system_load", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    resp = app_client.get("/api/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["system"] is None
+    assert data["running_count"] == 0
+
+
 def test_backup_session_whitelists_login_dirs_only(app_client: TestClient, tmp_db: Path):
     resp = app_client.post("/api/profiles", json={"name": "Backup Test"})
     assert resp.status_code == 201
